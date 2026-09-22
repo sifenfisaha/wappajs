@@ -357,3 +357,83 @@ describe('AnthropicProvider', () => {
     ).rejects.toThrow('no scripted response left');
   });
 });
+
+describe('AnthropicProvider request options', () => {
+  it('caches the stable system part when the request carries systemParts', async () => {
+    const client = new FakeClient([makeMessage([textBlock('ok')])]);
+    const provider = new AnthropicProvider({ client });
+    await provider.generate({
+      system: 'facts\n\nnow',
+      systemParts: { stable: 'facts', dynamic: 'now' },
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+    expect(client.requests[0]!.system).toEqual([
+      { type: 'text', text: 'facts', cache_control: { type: 'ephemeral' } },
+      { type: 'text', text: 'now' },
+    ]);
+  });
+
+  it('sends effort as output_config and thinking as given, only when set', async () => {
+    const client = new FakeClient([makeMessage([textBlock('ok')]), makeMessage([textBlock('ok')])]);
+    const plain = new AnthropicProvider({ client });
+    await plain.generate({ messages: [{ role: 'user', content: 'hi' }] });
+    expect(client.requests[0]).not.toHaveProperty('output_config');
+    expect(client.requests[0]).not.toHaveProperty('thinking');
+
+    const tuned = new AnthropicProvider({ client, effort: 'low', thinking: { type: 'adaptive' } });
+    await tuned.generate({ messages: [{ role: 'user', content: 'hi' }] });
+    expect(client.requests[1]).toMatchObject({
+      output_config: { effort: 'low' },
+      thinking: { type: 'adaptive' },
+    });
+  });
+
+  it('merges extraParams after its own fields', async () => {
+    const client = new FakeClient([makeMessage([textBlock('ok')])]);
+    const provider = new AnthropicProvider({
+      client,
+      extraParams: { metadata: { user_id: 'u1' }, max_tokens: 4096 },
+    });
+    await provider.generate({ messages: [{ role: 'user', content: 'hi' }], maxTokens: 512 });
+    expect(client.requests[0]).toMatchObject({ metadata: { user_id: 'u1' }, max_tokens: 4096 });
+  });
+
+  it('keeps the blocks of a tool-calling turn and replays them, thinking included, on the next call', async () => {
+    const thinking: Anthropic.ThinkingBlock = { type: 'thinking', thinking: '', signature: 'sig-1' };
+    const client = new FakeClient([
+      makeMessage([thinking, toolUseBlock('c1', 'lookup', { q: 'x' })], 'tool_use'),
+      makeMessage([textBlock('found it')]),
+    ]);
+    const provider = new AnthropicProvider({ client });
+    const tools: ToolSpec[] = [{ name: 'lookup', description: 'l', parameters: { type: 'object' } }];
+
+    const first = await provider.generate({ messages: [{ role: 'user', content: 'go' }], tools });
+    expect(first.toolCalls).toEqual([{ id: 'c1', name: 'lookup', arguments: { q: 'x' } }]);
+    expect(first.providerData).toBeDefined();
+
+    // What the Agent does with the result: append it, with providerData, then the tool result.
+    const history: ChatMessage[] = [
+      { role: 'user', content: 'go' },
+      { role: 'assistant', content: '', toolCalls: first.toolCalls, providerData: first.providerData },
+      { role: 'tool', content: 'ok', toolCallId: 'c1', toolName: 'lookup' },
+    ];
+    const second = await provider.generate({ messages: history, tools });
+    expect(second.text).toBe('found it');
+    expect(client.requests[1]!.messages[1]).toEqual({
+      role: 'assistant',
+      content: [
+        { type: 'thinking', thinking: '', signature: 'sig-1' },
+        { type: 'tool_use', id: 'c1', name: 'lookup', input: { q: 'x' } },
+      ],
+    });
+  });
+
+  it('warns when the model refuses the turn', async () => {
+    const { logger, entries } = recordingLogger();
+    const client = new FakeClient([makeMessage([], 'refusal')]);
+    const provider = new AnthropicProvider({ client, logger });
+    const result = await provider.generate({ messages: [{ role: 'user', content: 'hi' }] });
+    expect(result).toMatchObject({ text: null, toolCalls: [], finishReason: 'other' });
+    expect(entries.some((e) => e.level === 'warn' && e.msg.includes('refused'))).toBe(true);
+  });
+});

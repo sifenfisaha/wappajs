@@ -5,6 +5,7 @@ import {
   degradeToolHistory,
   fromAnthropicResponse,
   toAnthropicMessages,
+  toAnthropicSystem,
   toAnthropicTools,
 } from './mapping.js';
 
@@ -342,5 +343,148 @@ describe('fromAnthropicResponse', () => {
     expect(result.text).toBeNull();
     expect(result.toolCalls).toEqual([]);
     expect(result.finishReason).toBe('length');
+  });
+});
+
+const thinkingBlock = (thinking: string, signature: string): Anthropic.ThinkingBlock => ({
+  type: 'thinking',
+  thinking,
+  signature,
+});
+
+describe('replaying a turn from providerData', () => {
+  it('rebuilds the response blocks as request blocks, thinking included', () => {
+    const history: ChatMessage[] = [
+      { role: 'user', content: 'find k1' },
+      {
+        role: 'assistant',
+        content: 'Looking.',
+        toolCalls: [{ id: 'c1', name: 'lookup', arguments: { key: 'k1' } }],
+        providerData: [
+          thinkingBlock('let me see', 'sig123'),
+          textBlock('Looking.'),
+          toolUseBlock('c1', 'lookup', { key: 'k1' }),
+        ],
+      },
+      { role: 'tool', content: 'found', toolCallId: 'c1', toolName: 'lookup' },
+    ];
+    const { messages } = toAnthropicMessages(undefined, history);
+    expect(messages[1]).toEqual({
+      role: 'assistant',
+      content: [
+        { type: 'thinking', thinking: 'let me see', signature: 'sig123' },
+        { type: 'text', text: 'Looking.' },
+        { type: 'tool_use', id: 'c1', name: 'lookup', input: { key: 'k1' } },
+      ],
+    });
+    // Response-only fields never reach the request.
+    const blocks = (messages[1]!.content as Array<Record<string, unknown>>);
+    expect(blocks[1]).not.toHaveProperty('citations');
+    expect(blocks[2]).not.toHaveProperty('caller');
+  });
+
+  it('replays a text-only turn that carried thinking, and drops empty text blocks', () => {
+    const history: ChatMessage[] = [
+      { role: 'user', content: 'hi' },
+      {
+        role: 'assistant',
+        content: 'Hello.',
+        providerData: [thinkingBlock('', 'sig'), textBlock(''), textBlock('Hello.')],
+      },
+    ];
+    const { messages } = toAnthropicMessages(undefined, history);
+    expect(messages[1]).toEqual({
+      role: 'assistant',
+      content: [
+        { type: 'thinking', thinking: '', signature: 'sig' },
+        { type: 'text', text: 'Hello.' },
+      ],
+    });
+  });
+
+  it('falls back to text + tool_use when providerData is not a list of blocks', () => {
+    const history: ChatMessage[] = [
+      { role: 'user', content: 'go' },
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'c1', name: 'ping', arguments: {} }],
+        providerData: { someOtherProvider: true },
+      },
+    ];
+    const { messages } = toAnthropicMessages(undefined, history);
+    expect(messages[1]).toEqual({
+      role: 'assistant',
+      content: [{ type: 'tool_use', id: 'c1', name: 'ping', input: {} }],
+    });
+  });
+
+  it('falls back to the plain text when every replay block is empty', () => {
+    const history: ChatMessage[] = [
+      { role: 'user', content: 'go' },
+      { role: 'assistant', content: 'kept', providerData: [textBlock('')] },
+    ];
+    const { messages } = toAnthropicMessages(undefined, history);
+    expect(messages[1]).toEqual({ role: 'assistant', content: 'kept' });
+  });
+
+  it('degradeToolHistory drops providerData with the tool blocks, keeps it on text turns', () => {
+    const degraded = degradeToolHistory([
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'c1', name: 'ping', arguments: {} }],
+        providerData: [toolUseBlock('c1', 'ping', {})],
+      },
+      { role: 'assistant', content: 'done', providerData: [thinkingBlock('t', 's')] },
+    ]);
+    expect(degraded[0]).toEqual({ role: 'assistant', content: '[called ping({})]' });
+    expect(degraded[1]).toHaveProperty('providerData');
+  });
+});
+
+describe('toAnthropicSystem', () => {
+  it('returns the plain string when there are no parts', () => {
+    expect(toAnthropicSystem('sys', undefined)).toBe('sys');
+    expect(toAnthropicSystem(undefined, undefined)).toBeUndefined();
+  });
+
+  it('marks the stable part with a cache breakpoint and appends the dynamic part', () => {
+    expect(toAnthropicSystem('facts\n\nnow', { stable: 'facts', dynamic: 'now' })).toEqual([
+      { type: 'text', text: 'facts', cache_control: { type: 'ephemeral' } },
+      { type: 'text', text: 'now' },
+    ]);
+  });
+
+  it('omits an empty dynamic part, and falls back to the string for an empty stable part', () => {
+    expect(toAnthropicSystem('facts', { stable: 'facts', dynamic: '' })).toEqual([
+      { type: 'text', text: 'facts', cache_control: { type: 'ephemeral' } },
+    ]);
+    expect(toAnthropicSystem('now', { stable: '', dynamic: 'now' })).toBe('now');
+  });
+
+  it('is what toAnthropicMessages puts on the request', () => {
+    const { system } = toAnthropicMessages('facts\n\nnow', [{ role: 'user', content: 'hi' }], {
+      stable: 'facts',
+      dynamic: 'now',
+    });
+    expect(system).toEqual([
+      { type: 'text', text: 'facts', cache_control: { type: 'ephemeral' } },
+      { type: 'text', text: 'now' },
+    ]);
+  });
+});
+
+describe('fromAnthropicResponse providerData', () => {
+  it('keeps the whole content when it holds more than text', () => {
+    const content = [thinkingBlock('hm', 'sig'), toolUseBlock('c1', 'ping', {})];
+    const result = fromAnthropicResponse(makeMessage(content, 'tool_use'));
+    expect(result.providerData).toBe(content);
+    expect(result.toolCalls).toEqual([{ id: 'c1', name: 'ping', arguments: {} }]);
+  });
+
+  it('adds no providerData for a text-only response', () => {
+    const result = fromAnthropicResponse(makeMessage([textBlock('plain')]));
+    expect('providerData' in result).toBe(false);
   });
 });
