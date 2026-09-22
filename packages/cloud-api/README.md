@@ -34,7 +34,8 @@ await bot.start();
 - `X-Hub-Signature-256` request verification when `appSecret` is set;
   `verifySignature`, `computeSignature` and `readRawBody` are exported for custom servers
 - Normalizes Cloud API payloads into wappa's message model (text, media, replies)
-- Bring your own HTTP server, or let the transport start one
+- Bring your own HTTP server, or let the transport start one; fetch-style hosts (Bun,
+  Deno, Workers, Hono, Next.js) mount `handleFetch(request)`
 
 Meta dashboard setup (app, phone number, webhook, app secret) is walked through in
 https://github.com/sifenfisaha/wappajs/blob/main/docs/transports/cloud-api.md

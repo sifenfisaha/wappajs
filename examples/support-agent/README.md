@@ -7,7 +7,9 @@ WhatsApp number (Baileys). It shows:
 - human handoff: escalation sets `ctx.session.paused = true` and notifies an operator
   chat; the operator sends `/resume <chatId>` to hand the chat back to the agent
   (operator-only — without `OPERATOR_CHAT_ID` set, `/resume` is disabled)
-- instructions-as-function (injects the customer's name and the current time)
+- the prompt in two halves: `knowledge` (the persona and rules, cached at the API by the
+  Anthropic provider) and instructions-as-function (injects the customer's name and the
+  current time, the part that changes)
 - `rateLimit` middleware and a `FileSessionStore` (history + paused flag survive
   restarts, in `./sessions`)
 

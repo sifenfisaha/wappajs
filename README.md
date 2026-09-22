@@ -30,6 +30,14 @@ npm create wappa-agent my-bot
   instead of crashes.
 - **Sessions built in.** Per-chat conversation history and durable data with in-memory
   and file-backed stores, and a lost-update-safe pause/resume flag for human handoff.
+- **Prompt caching by construction.** Put the half of the prompt that never changes in
+  `knowledge`; `@wappajs/anthropic` caches it, so a long catalogue costs a tenth on every
+  message after the first.
+- **Today's models, handled.** Adaptive-thinking models need their thinking blocks
+  replayed inside a tool loop; the Anthropic provider keeps them on the session and
+  sends them back, and exposes `effort` and `thinking` for tuning.
+- **Any server.** The webhook transports mount into node:http or into any fetch-style
+  host (Bun, Deno, Cloudflare Workers, Hono, Next.js) with `handleFetch(request)`.
 - **Testability is a feature.** `@wappajs/core/testing` ships `MockTransport` and
   `ScriptedProvider`, so you can unit-test a whole bot offline, with no WhatsApp and no LLM key.
 - **Per-chat concurrency model.** Messages within one chat are processed strictly in

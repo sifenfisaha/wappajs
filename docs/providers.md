@@ -12,8 +12,11 @@ import { AnthropicProvider } from '@wappajs/anthropic';
 const provider = new AnthropicProvider({
   apiKey: '...',              // default: ANTHROPIC_API_KEY env var (SDK default)
   model: 'claude-sonnet-5',   // default
+  effort: 'medium',           // optional: output_config.effort; the API default is 'high'
+  thinking: { type: 'adaptive' }, // optional: the `thinking` param, passed through as given
+  extraParams: {},            // optional: merged into every request last (metadata, stop_sequences, ...)
   clientOptions: {            // extra options for the Anthropic CLIENT CONSTRUCTOR
-    // baseURL, timeout, maxRetries, ...
+    // baseURL, timeout, maxRetries, defaultHeaders, ...
   },
   logger,                     // adapter diagnostics (e.g. dropped sampling params); default consoleLogger()
 });
@@ -25,6 +28,33 @@ Mapping notes (all handled for you):
 
 - `system` travels as the API's top-level `system` param; `maxTokens` → `max_tokens`
   (the API requires it, 1024 when unset).
+- **The agent's `knowledge` is cached.** When the agent has [`knowledge`](concepts.md#knowledge-the-half-of-the-prompt-that-does-not-change),
+  the system prompt is sent as two text blocks with a cache breakpoint after the stable
+  one. The API caches the prefix up to the breakpoint (the tools, then the knowledge),
+  so from the second call on, every message of every chat reads it from the cache at
+  about a tenth of the input price. Nothing to configure; keep volatile text out of the
+  knowledge and the cache stays warm.
+- **Thinking blocks are kept and replayed.** The current models think before they
+  answer, and inside a tool loop the API requires the thinking block of the
+  tool-calling turn to come back unchanged, or the next call is rejected. The provider
+  keeps the content blocks of every turn that holds more than text on the assistant
+  message's `providerData` (the Agent stores it with the history, session stores
+  persist it) and replays them, rebuilt with request fields only, on the next call.
+  Nothing to configure here either.
+- `effort` → `output_config.effort`. The API default is `'high'`; a chat assistant
+  is usually better served at `'low'` or `'medium'`, which answer in seconds and cost
+  less. `thinking` is passed through as given, for models that leave thinking off by
+  default (`{ type: 'adaptive' }`) or to turn it off where a model allows that.
+- `extraParams` is merged into every request after the provider's own fields: the
+  escape hatch for Messages API parameters the provider does not model. A beta feature
+  needs its header too, which goes through the client:
+
+  ```ts
+  new AnthropicProvider({
+    extraParams: { fallbacks: 'default' },
+    clientOptions: { defaultHeaders: { 'anthropic-beta': 'server-side-fallback-2026-07-01' } },
+  });
+  ```
 - `temperature` is forwarded only when set **and** the model still supports it. The
   current model generation, covering `claude-fable-5`, `claude-mythos-5`, `claude-opus-5`,
   `claude-opus-4-7`, `claude-opus-4-8`, and `claude-sonnet-5` (the default), has
@@ -44,6 +74,9 @@ Mapping notes (all handled for you):
   wappa `ToolCall`s; `stop_reason` maps `end_turn` → `stop`, `tool_use` → `tool_calls`,
   `max_tokens` → `length`, anything else → `other`. Token usage is reported on
   `GenerateResult.usage`.
+- A turn the model refuses (`stop_reason: 'refusal'`) comes back with no text and is
+  logged at warn level with its `stop_details`; the Bot then sends nothing for that
+  message. Handle it upstream if silence is not what you want.
 
 ## `@wappajs/openai`: GPT and OpenAI-compatible servers
 
@@ -113,8 +146,8 @@ Implement the `Provider` interface from `@wappajs/core`, one readonly name and o
 ```ts
 import type {
   ChatMessage,      // { role: 'user'|'assistant'|'tool', content, toolCalls?, toolCallId?, toolName? }
-  GenerateRequest,  // { system?, messages, tools?, maxTokens?, temperature? }
-  GenerateResult,   // { text, toolCalls, finishReason, usage? }
+  GenerateRequest,  // { system?, systemParts?, messages, tools?, maxTokens?, temperature? }
+  GenerateResult,   // { text, toolCalls, finishReason, usage?, providerData? }
   Provider,
   ToolCall,         // { id, name, arguments: Record<string, unknown> }
   ToolSpec,         // { name, description, parameters: JsonSchema }
@@ -148,6 +181,14 @@ The contract, in full:
   `''` when the model only called tools.
 - `tools` (when present) are `ToolSpec`s whose `parameters` is a JSON Schema object,
   map them to your API's tool/function format.
+- `systemParts` is present when the agent has `knowledge`: `{ stable, dynamic }`, the
+  same text as `system` in two pieces. Use it if your API can cache a prompt prefix;
+  ignore it otherwise, `system` already carries both in the right order.
+- `providerData` is yours: return whatever you need to replay an assistant turn exactly
+  (thinking blocks, reasoning items, signatures) on `GenerateResult`, and the Agent
+  stores it on the assistant message it appends, so it comes back to you on that message
+  in `messages` next call. It must be JSON-serializable, because session stores persist
+  it. Leave it out when your API needs nothing.
 - Return `text: null` (not `''`) when the model produced no text, and every requested
   call as a `ToolCall` with `arguments` as a plain object (parse if your API sends
   JSON strings; fall back to `{}` rather than throwing).

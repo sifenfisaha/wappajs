@@ -149,6 +149,34 @@ app.listen(3000);
 For a plain `node:http` server, just call `handleRequest(req, res)` (no `rawBody`
 needed, the transport reads the stream) and 404 anything it didn't handle.
 
+### Mounting into a fetch-style server (Bun, Deno, Workers, Hono, Next.js)
+
+Runtimes and frameworks that speak WHATWG `Request`/`Response`, such as Bun, Deno,
+Cloudflare Workers, Hono, Next.js route handlers, SvelteKit and Remix, have no
+`IncomingMessage` to hand over. `handleFetch(request)` takes the request and returns the
+response: GET answers the verification handshake, POST takes deliveries. Route both
+methods yourself, on whatever path you like; the transport does no `webhookPath` check
+here:
+
+```ts
+import { Hono } from 'hono';
+
+const app = new Hono();
+app.get('/api/whatsapp/meta', (c) => transport.handleFetch(c.req.raw));
+app.post('/api/whatsapp/meta', (c) => transport.handleFetch(c.req.raw));
+
+await bot.start();                                 // no internal server without `port`
+export default { port: 3000, fetch: app.fetch };  // Bun
+```
+
+In a Next.js route handler, export the same function twice: `const handler = (req:
+Request) => transport.handleFetch(req); export { handler as GET, handler as POST };`. The
+semantics match `handleRequest`: 200 + `hub.challenge` or 403 for the handshake, 401 for
+a missing or invalid signature, 400 for an unreadable or oversized body, 405 for other
+methods, and 200 for a valid post with the events delivered after the response is
+returned. The signature is checked over the raw bytes, so do not parse the body before
+handing the request over.
+
 ### POST handling semantics
 
 Valid webhook POSTs are acknowledged with **200 immediately** and processed

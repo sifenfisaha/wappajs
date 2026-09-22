@@ -15,7 +15,7 @@ import { TwilioTransport } from '@wappajs/twilio';
 const transport = new TwilioTransport({
   accountSid: process.env.TWILIO_ACCOUNT_SID!,
   authToken: process.env.TWILIO_AUTH_TOKEN!,
-  from: 'whatsapp:+14155238886',
+  whatsappNumber: 'whatsapp:+14155238886',
   port: 3000,
 });
 
@@ -33,6 +33,8 @@ await bot.start();
 - Parses Twilio's `application/x-www-form-urlencoded` webhooks into wappa's message model
 - Media in and out via Twilio's media URLs
 - Works with the Twilio WhatsApp Sandbox for development
+- Runs its own `node:http` server, mounts into yours with `handleRequest`, or into any
+  fetch-style host (Bun, Deno, Workers, Hono, Next.js) with `handleFetch(request)`
 
 Setup walkthrough: https://github.com/sifenfisaha/wappajs/blob/main/docs/transports
 

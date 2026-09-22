@@ -223,6 +223,7 @@ const checkOrder = defineTool({
 ```ts
 const agent = new Agent({
   instructions,           // string, or (ctx) => string | Promise<string>, re-evaluated per message
+  knowledge,              // optional: the half of the prompt that never changes, cached where possible (see below)
   provider,               // AnthropicProvider, OpenAIProvider, or your own
   tools: [checkOrder],    // optional
   maxTurns: 8,            // default: max provider round-trips per inbound message
@@ -245,7 +246,9 @@ does) and does **not** persist the session (also the Bot's job):
 2. **Loop** (up to `maxTurns` times): call `provider.generate()` with the system
    prompt, the windowed history, and the tool specs.
    - If the model returned no tool calls, its text is the final answer, so stop.
-   - Otherwise append the assistant message (with its `toolCalls`) and execute each
+   - Otherwise append the assistant message (with its `toolCalls`, and whatever
+     `providerData` the provider returned, so it can replay its own turn exactly, see
+     the [provider contract](providers.md#writing-a-custom-provider)) and execute each
      requested call **sequentially** via `tool.invoke(args, ctx)`, appending one
      `role: 'tool'` message per call.
    - A requested tool name that is not registered does not throw: the tool result is
@@ -275,6 +278,36 @@ does) and does **not** persist the session (also the Bot's job):
 
 `run` returns the final text, or `null` when the model produced none (in which case the
 Bot sends nothing).
+
+### Knowledge: the half of the prompt that does not change
+
+A real agent's system prompt is mostly material that is the same on every message: the
+policy, the product catalogue, the FAQ, the price list. Only a few lines change from one
+message to the next: the time, who is writing, what state the chat is in. `knowledge` is
+where the stable material goes, and `instructions` is where the rest goes:
+
+```ts
+const agent = new Agent({
+  knowledge: () => catalogue.render(),   // long, and identical from one message to the next
+  instructions: (ctx) =>                  // short, and different every time
+    `Now: ${new Date().toISOString()}. Customer: ${ctx.message.senderName ?? 'unknown'}.`,
+  provider: new AnthropicProvider(),
+});
+```
+
+The agent sends the provider the knowledge first, then the instructions, as one `system`
+string, and alongside it the same prompt split in two (`GenerateRequest.systemParts`). A
+provider that supports prompt caching caches the stable part: `@wappajs/anthropic` puts a
+cache breakpoint after it, so every message of every chat reads the knowledge from the
+cache, at a tenth of the input price and without the latency of the model re-reading it.
+A provider that cannot cache ignores the split and uses `system`, which is what OpenAI's
+automatic prefix caching wants as well: the stable bytes first.
+
+Two rules keep the cache warm. Put every stable byte in `knowledge` and nothing volatile,
+since a timestamp in the knowledge invalidates the cache on every message. And note that
+the function form is re-evaluated per message like `instructions`, so it can be rebuilt
+from a database as often as you like; the cache holds for as long as the text comes back
+identical.
 
 ## Pause and handoff
 

@@ -2,7 +2,7 @@
  * support-agent — the flagship wappa example: Claude + tools + Baileys.
  *
  * What it shows:
- *   - an Agent with zod-typed tools and instructions-as-function
+ *   - an Agent with zod-typed tools, cached knowledge and instructions-as-function
  *   - human handoff: escalate_to_human pauses the chat and pings an operator,
  *     who resumes it with '/resume <chatId>' (operator-only — without
  *     OPERATOR_CHAT_ID configured, /resume is disabled entirely)
@@ -72,13 +72,19 @@ const escalateToHuman = defineTool({
 });
 
 const agent = new Agent({
-  // Function-form instructions are re-evaluated for every message, so they can
-  // inject live context — here the customer's name and the current time.
+  // The prompt in two halves. `knowledge` is what never changes between messages
+  // (the persona, the rules, a catalogue if you have one); the Anthropic provider
+  // caches it at the API, so it costs a tenth on every message after the first.
+  knowledge: [
+    'You are a friendly, concise customer-support agent for Acme Gadgets.',
+    'Answer order questions with check_order_status; never guess statuses.',
+    'If you cannot help, or the customer asks for a human, call escalate_to_human.',
+  ].join('\n'),
+  // `instructions` is what changes: it is re-evaluated for every message, so it
+  // can carry live context — the customer's name and the current time. Keep the
+  // volatile lines here, not in the knowledge, or the cache never hits.
   instructions: (ctx) =>
     [
-      'You are a friendly, concise customer-support agent for Acme Gadgets.',
-      'Answer order questions with check_order_status; never guess statuses.',
-      'If you cannot help, or the customer asks for a human, call escalate_to_human.',
       `Customer name: ${ctx.message.senderName ?? 'unknown'}.`,
       `Current time: ${new Date().toISOString()}.`,
     ].join('\n'),

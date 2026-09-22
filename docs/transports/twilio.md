@@ -149,6 +149,31 @@ app.listen(3000);
 For a plain `node:http` server, just call `handleRequest(req, res)` (no `rawBody`
 needed, the transport reads the stream) and 404 anything it didn't handle.
 
+### Mounting into a fetch-style server (Bun, Deno, Workers, Hono, Next.js)
+
+Runtimes and frameworks that speak WHATWG `Request`/`Response`, such as Bun, Deno,
+Cloudflare Workers, Hono, Next.js route handlers, SvelteKit and Remix, have no
+`IncomingMessage` to hand over. `handleFetch(request)` takes the request and returns the
+response. Route it yourself, on whatever path you like; the transport does no
+`webhookPath` check here:
+
+```ts
+import { Hono } from 'hono';
+
+const app = new Hono();
+app.post('/api/whatsapp/twilio', (c) => transport.handleFetch(c.req.raw));
+
+await bot.start();                                 // no internal server without `port`
+export default { port: 3000, fetch: app.fetch };  // Bun
+```
+
+A Next.js route handler is one line: `export const POST = (req: Request) =>
+transport.handleFetch(req);`. The semantics match `handleRequest`: 405 for anything but
+POST, 400 for an unreadable or oversized body, 403 for a missing or invalid signature,
+200 + empty TwiML for a valid post, with the message delivered after the response is
+returned. Set `webhookUrl` to the exact public URL of the route you mounted: behind a
+proxy, the request's own URL is not what Twilio signed.
+
 ### POST handling semantics
 
 Valid webhook POSTs are acknowledged **immediately** with 200 and an empty TwiML body

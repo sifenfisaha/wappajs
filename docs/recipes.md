@@ -211,3 +211,67 @@ bot.hears('2', handleCash);
 
 If you only target the Cloud API, check `ctx.message.buttonId` in a middleware or
 handler instead. It round-trips the button `id` exactly.
+
+## Keeping a transcript
+
+Sessions hold the model's windowed history, which rolls. A support desk wants the whole
+conversation, in order, with who said what, and that is two lines of middleware: record
+the inbound message, and wrap `ctx.reply` so every outbound reply is recorded on its way
+out. Nothing in the framework needs to know.
+
+```ts
+bot.use(async (ctx, next) => {
+  const chatId = ctx.message.chatId;
+  await transcript.append(chatId, { from: 'customer', text: ctx.message.text ?? '[media]' });
+
+  const reply = ctx.reply;
+  ctx.reply = async (content) => {
+    const result = await reply(content);
+    const text = typeof content === 'string' ? content : (content.text ?? '[media]');
+    await transcript.append(chatId, { from: 'assistant', text, id: result.id });
+    return result;
+  };
+
+  await next();
+});
+```
+
+`bot.send` from outside the pipeline (an operator answering from a dashboard) does not
+pass through the middleware, so record those where you call them.
+
+## A database session store
+
+The built-in stores are a `Map` and one JSON file per chat. Production usually wants the
+sessions where the rest of the data is, and the interface is three methods over one JSON
+document per chat, so any database works. Postgres, with an upsert:
+
+```ts
+import type { SessionData, SessionStore } from '@wappajs/core';
+
+export class PostgresSessionStore implements SessionStore {
+  constructor(private readonly sql: Sql) {}
+
+  async get(chatId: string): Promise<SessionData | undefined> {
+    const [row] = await this.sql`select session from chat_session where chat_id = ${chatId}`;
+    return row?.session as SessionData | undefined;
+  }
+
+  async set(chatId: string, data: SessionData): Promise<void> {
+    await this.sql`
+      insert into chat_session (chat_id, session, paused, updated_at)
+      values (${chatId}, ${this.sql.json(data)}, ${data.paused ?? false}, now())
+      on conflict (chat_id) do update
+        set session = excluded.session, paused = excluded.paused, updated_at = now()`;
+  }
+
+  async delete(chatId: string): Promise<void> {
+    await this.sql`delete from chat_session where chat_id = ${chatId}`;
+  }
+}
+```
+
+Store the document whole: `history` (including any `providerData` a provider attached
+to its turns), `data`, `paused` and `updatedAt` all travel together, and the Bot reads
+and writes the session exactly once per message, so a row per chat is the right grain.
+Keeping `paused` in its own column as well, as above, lets a dashboard list handed-over
+chats without opening every document.

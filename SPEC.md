@@ -67,6 +67,26 @@ Versions (already resolved against the registry, do not change): `baileys@7.0.0-
 
 ---
 
+## Additions in 0.2.0
+
+The 0.1.0 contract below is unchanged; 0.2.0 adds to it, and every addition is optional
+for existing providers and transports:
+
+- `AgentOptions.knowledge?: string | ((ctx) => string | Promise<string>)`: the stable half
+  of the system prompt, sent before `instructions`. `GenerateRequest.system` stays the
+  complete prompt; `GenerateRequest.systemParts?: { stable, dynamic }` carries the split.
+- `GenerateResult.providerData?: unknown` and `ChatMessage.providerData?: unknown`: opaque,
+  provider-owned, JSON-serializable. The Agent copies it from the result onto the
+  assistant message it appends (tool-calling turns and the final text alike); session
+  stores persist it with the history. `ScriptedProvider` passes it through.
+- `AnthropicProviderOptions.effort`, `.thinking`, `.extraParams`; the provider caches
+  `systemParts.stable` with a cache breakpoint and replays `providerData` content blocks
+  (rebuilt as request blocks) in place of reconstructing an assistant turn from text and
+  tool calls.
+- `TwilioTransport.handleFetch(request: Request): Promise<Response>` and
+  `CloudApiTransport.handleFetch(request: Request): Promise<Response>`: the WHATWG twins of
+  `handleRequest`. No `webhookPath` check; the host routes. Same status codes.
+
 # @wappajs/core
 
 Dependencies: `zod` only. Dev: vitest, typescript.
