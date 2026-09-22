@@ -20,7 +20,7 @@ import {
   mapTwilioParams,
   type TwilioParams,
 } from './mapping.js';
-import { parseFormBody, readRawBody, verifyTwilioSignature } from './webhook.js';
+import { DEFAULT_MAX_BODY_BYTES, parseFormBody, readRawBody, verifyTwilioSignature } from './webhook.js';
 
 /** Cap on the redelivery-dedup MessageSid set. */
 const TRACKING_CAP = 1000;
@@ -206,10 +206,7 @@ export class TwilioTransport implements Transport {
       const header = req.headers['x-twilio-signature'];
       const signature = Array.isArray(header) ? header[0] : header;
       const signedUrl = this.webhookUrl ?? this.reconstructUrl(req);
-      if (!verifyTwilioSignature(this.authToken, signedUrl, params, signature)) {
-        this.logger.warn('twilio: rejected webhook POST with missing or invalid X-Twilio-Signature', {
-          url: signedUrl,
-        });
+      if (!this.signatureOk(params, signature, signedUrl)) {
         res.statusCode = 403;
         res.end('Forbidden');
         return true;
@@ -222,6 +219,45 @@ export class TwilioTransport implements Transport {
     res.end(EMPTY_TWIML);
     this.processWebhook(params);
     return true;
+  }
+
+  /**
+   * Fetch-style twin of {@link handleRequest}, for runtimes and frameworks that
+   * speak WHATWG `Request`/`Response`: Bun, Deno, Cloudflare Workers, Hono,
+   * Next.js route handlers, SvelteKit, Remix. Path routing is the host's job —
+   * every request handed in is treated as the webhook (there is no
+   * `webhookPath` check). The semantics match `handleRequest`: 405 for
+   * anything but POST, 400 for an unreadable or oversized body, 403 for a
+   * missing or invalid `X-Twilio-Signature` (checked against `webhookUrl`, or
+   * reconstructed from the request's own URL when unset — see the proxy
+   * caveat), and 200 + empty TwiML for a valid post, with the message
+   * delivered after the response is returned.
+   */
+  async handleFetch(request: Request): Promise<Response> {
+    if (request.method !== 'POST') {
+      return new Response('Method Not Allowed', { status: 405, headers: { allow: 'POST' } });
+    }
+    let raw: Buffer;
+    try {
+      raw = Buffer.from(await request.arrayBuffer());
+    } catch (err) {
+      this.logger.warn('twilio: failed to read webhook body', { error: String(err) });
+      return new Response('Bad Request', { status: 400 });
+    }
+    if (raw.length > DEFAULT_MAX_BODY_BYTES) {
+      this.logger.warn('twilio: webhook body exceeded the size cap', { bytes: raw.length });
+      return new Response('Bad Request', { status: 400 });
+    }
+    const params = parseFormBody(raw);
+    if (this.validateSignature) {
+      const signedUrl = this.webhookUrl ?? this.reconstructFetchUrl(request);
+      const signature = request.headers.get('x-twilio-signature') ?? undefined;
+      if (!this.signatureOk(params, signature, signedUrl)) {
+        return new Response('Forbidden', { status: 403 });
+      }
+    }
+    this.processWebhook(params);
+    return new Response(EMPTY_TWIML, { status: 200, headers: { 'content-type': 'text/xml' } });
   }
 
   /**
@@ -283,8 +319,28 @@ export class TwilioTransport implements Transport {
    * not configured. Behind a proxy/tunnel that rewrites Host (or terminates TLS
    * on a different path) this can mismatch what Twilio actually signed — warn once.
    */
+  private signatureOk(params: TwilioParams, signature: string | undefined, signedUrl: string): boolean {
+    if (verifyTwilioSignature(this.authToken, signedUrl, params, signature)) return true;
+    this.logger.warn('twilio: rejected webhook POST with missing or invalid X-Twilio-Signature', {
+      url: signedUrl,
+    });
+    return false;
+  }
+
+  /** The fetch-style counterpart of {@link reconstructUrl}: Host header (or the URL's host) + path + query. */
+  private reconstructFetchUrl(request: Request): string {
+    const url = new URL(request.url);
+    return this.warnReconstructed(
+      `https://${request.headers.get('host') ?? url.host}${url.pathname}${url.search}`,
+    );
+  }
+
   private reconstructUrl(req: IncomingMessage): string {
-    const url = `https://${req.headers.host ?? 'localhost'}${req.url ?? this.webhookPath}`;
+    return this.warnReconstructed(`https://${req.headers.host ?? 'localhost'}${req.url ?? this.webhookPath}`);
+  }
+
+  /** Warn once that the signed URL is being guessed rather than configured. */
+  private warnReconstructed(url: string): string {
     if (!this.warnedReconstructedUrl) {
       this.warnedReconstructedUrl = true;
       this.logger.warn(

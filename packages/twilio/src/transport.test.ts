@@ -620,3 +620,125 @@ describe('lifecycle', () => {
     expect(transport.name).toBe('twilio');
   });
 });
+
+describe('handleFetch (Bun, Deno, Workers, Hono, Next.js route handlers)', () => {
+  /** A transport with no server of its own, as a fetch-style host would mount it. */
+  async function fetchSetup(overrides: Partial<TwilioTransportOptions> = {}) {
+    const twilio = await startFakeTwilio();
+    const messages: InboundMessage[] = [];
+    const logger = spyLogger();
+    const transport = new TwilioTransport({
+      accountSid: ACCOUNT_SID,
+      authToken: AUTH_TOKEN,
+      whatsappNumber: FROM_NUMBER,
+      webhookUrl: WEBHOOK_URL,
+      apiBaseUrl: twilio.origin,
+      logger,
+      ...overrides,
+    });
+    await transport.start({
+      onMessage: (m) => {
+        messages.push(m);
+      },
+    });
+    cleanups.push(() => transport.stop());
+    return { transport, twilio, messages, logger };
+  }
+
+  /** A WHATWG Request as a fetch host would hand it over, signed like Twilio signs. */
+  function webhookRequest(
+    params: Record<string, string>,
+    opts: { signature?: string | null; signUrl?: string; url?: string; method?: string; body?: string } = {},
+  ): Request {
+    const headers: Record<string, string> = { 'content-type': 'application/x-www-form-urlencoded' };
+    const signature =
+      opts.signature !== undefined
+        ? opts.signature
+        : computeTwilioSignature(AUTH_TOKEN, opts.signUrl ?? WEBHOOK_URL, params);
+    if (signature !== null) headers['x-twilio-signature'] = signature;
+    return new Request(opts.url ?? 'http://localhost:3000/api/whatsapp/twilio', {
+      method: opts.method ?? 'POST',
+      headers,
+      body: opts.body ?? new URLSearchParams(params).toString(),
+    });
+  }
+
+  it('answers 200 + empty TwiML for a valid signature and delivers the message', async () => {
+    const s = await fetchSetup();
+    const res = await s.transport.handleFetch(webhookRequest(textParams('hi from bun')));
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('text/xml');
+    expect(await res.text()).toBe('<Response/>');
+    await waitFor(() => s.messages.length === 1);
+    expect(s.messages[0]).toMatchObject({ id: SID, chatId: SENDER, senderId: SENDER, text: 'hi from bun' });
+  });
+
+  it('rejects a bad signature and a missing header with 403 and delivers nothing', async () => {
+    const s = await fetchSetup();
+    const bad = await s.transport.handleFetch(webhookRequest(textParams('x'), { signature: 'nope' }));
+    const none = await s.transport.handleFetch(webhookRequest(textParams('x'), { signature: null }));
+    expect(bad.status).toBe(403);
+    expect(none.status).toBe(403);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(s.messages).toHaveLength(0);
+    expect(s.logger.warn).toHaveBeenCalledTimes(2);
+  });
+
+  it('ignores the request path: whatever the host routed here is the webhook', async () => {
+    const s = await fetchSetup();
+    const res = await s.transport.handleFetch(
+      webhookRequest(textParams('any path'), { url: 'http://localhost/some/other/route' }),
+    );
+    expect(res.status).toBe(200);
+    await waitFor(() => s.messages.length === 1);
+  });
+
+  it('answers 405 for anything but POST', async () => {
+    const s = await fetchSetup();
+    const res = await s.transport.handleFetch(
+      new Request('http://localhost/api/whatsapp/twilio', { method: 'GET' }),
+    );
+    expect(res.status).toBe(405);
+    expect(res.headers.get('allow')).toBe('POST');
+  });
+
+  it('reconstructs the signed URL from the request when webhookUrl is unset, warning once', async () => {
+    const s = await fetchSetup({ webhookUrl: undefined });
+    const url = 'https://bot.example.com/hooks/twilio?tenant=1';
+    const first = await s.transport.handleFetch(webhookRequest(textParams('a'), { signUrl: url, url }));
+    const second = await s.transport.handleFetch(
+      webhookRequest(textParams('b', 'SM_second'), { signUrl: url, url }),
+    );
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    await waitFor(() => s.messages.length === 2);
+    expect(s.logger.warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('acknowledges and ignores a status callback', async () => {
+    const s = await fetchSetup();
+    const params = {
+      MessageSid: 'SM_status',
+      SmsSid: 'SM_status',
+      AccountSid: ACCOUNT_SID,
+      From: FROM_NUMBER,
+      To: SENDER,
+      MessageStatus: 'delivered',
+      SmsStatus: 'delivered',
+      ApiVersion: '2010-04-01',
+    };
+    const res = await s.transport.handleFetch(webhookRequest(params));
+    expect(res.status).toBe(200);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(s.messages).toHaveLength(0);
+  });
+
+  it('answers 400 for a body over the 1 MiB cap without checking the signature', async () => {
+    const s = await fetchSetup();
+    const res = await s.transport.handleFetch(
+      webhookRequest(textParams('big'), { body: 'a'.repeat(1024 * 1024 + 1) }),
+    );
+    expect(res.status).toBe(400);
+    expect(s.messages).toHaveLength(0);
+  });
+});

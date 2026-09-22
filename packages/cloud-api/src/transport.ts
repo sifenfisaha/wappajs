@@ -15,7 +15,7 @@ import {
   type TransportHandlers,
 } from '@wappajs/core';
 import { buildSendBody, isHttpUrl, mapWebhookPayload } from './mapping.js';
-import { readRawBody, verifySignature } from './webhook.js';
+import { DEFAULT_MAX_BODY_BYTES, readRawBody, verifySignature } from './webhook.js';
 
 /** Cap on the per-chat lastInboundId map and the redelivery-dedup id set. */
 const TRACKING_CAP = 1000;
@@ -217,6 +217,65 @@ export class CloudApiTransport implements Transport {
     res.setHeader('allow', 'GET, POST');
     res.end('Method Not Allowed');
     return true;
+  }
+
+  /**
+   * Fetch-style twin of {@link handleRequest}, for runtimes and frameworks that
+   * speak WHATWG `Request`/`Response`: Bun, Deno, Cloudflare Workers, Hono,
+   * Next.js route handlers, SvelteKit, Remix. Path routing is the host's job —
+   * every request handed in is treated as the webhook (there is no
+   * `webhookPath` check). GET answers the hub.challenge verification, POST
+   * verifies `X-Hub-Signature-256` over the raw bytes (401 when it fails, a
+   * one-time warning when no `appSecret` is set) and acknowledges with 200
+   * before processing; anything else is 405. An unreadable or oversized body
+   * is 400.
+   */
+  async handleFetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+
+    if (request.method === 'GET') {
+      const mode = url.searchParams.get('hub.mode');
+      const token = url.searchParams.get('hub.verify_token');
+      if (mode === 'subscribe' && token === this.verifyToken) {
+        this.logger.info('cloud-api: webhook verification succeeded');
+        return new Response(url.searchParams.get('hub.challenge') ?? '', {
+          status: 200,
+          headers: { 'content-type': 'text/plain' },
+        });
+      }
+      this.logger.warn('cloud-api: webhook verification rejected', { mode });
+      return new Response('Forbidden', { status: 403 });
+    }
+
+    if (request.method === 'POST') {
+      let raw: Buffer;
+      try {
+        raw = Buffer.from(await request.arrayBuffer());
+      } catch (err) {
+        this.logger.warn('cloud-api: failed to read webhook body', { error: String(err) });
+        return new Response('Bad Request', { status: 400 });
+      }
+      if (raw.length > DEFAULT_MAX_BODY_BYTES) {
+        this.logger.warn('cloud-api: webhook body exceeded the size cap', { bytes: raw.length });
+        return new Response('Bad Request', { status: 400 });
+      }
+      if (this.appSecret) {
+        const signature = request.headers.get('x-hub-signature-256') ?? undefined;
+        if (!verifySignature(this.appSecret, raw, signature)) {
+          this.logger.warn('cloud-api: rejected webhook POST with missing or invalid X-Hub-Signature-256');
+          return new Response('Invalid signature', { status: 401 });
+        }
+      } else if (!this.warnedNoSecret) {
+        this.warnedNoSecret = true;
+        this.logger.warn(
+          'cloud-api: appSecret is not set — processing webhook POST WITHOUT signature verification',
+        );
+      }
+      void this.processWebhook(raw);
+      return new Response(null, { status: 200 });
+    }
+
+    return new Response('Method Not Allowed', { status: 405, headers: { allow: 'GET, POST' } });
   }
 
   /**

@@ -11,7 +11,7 @@ import type { IncomingMessage } from 'node:http';
  * form-encoded documents, and this buffering happens before authentication —
  * keep it low.
  */
-const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
+export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 
 /**
  * Read a request stream fully into a Buffer. Rejects if the stream errors or the

@@ -10,7 +10,7 @@ import type { IncomingMessage } from 'node:http';
  * Default cap on webhook body size. Real Cloud API events are small (<100 KB)
  * JSON documents, and this buffering happens before authentication — keep it low.
  */
-const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
+export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 
 /**
  * Read a request stream fully into a Buffer. Rejects if the stream errors or the

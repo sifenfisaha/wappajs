@@ -687,3 +687,85 @@ describe('lifecycle', () => {
     expect(transport.name).toBe('cloud-api');
   });
 });
+
+describe('handleFetch (Bun, Deno, Workers, Hono, Next.js route handlers)', () => {
+  /** A transport with no server of its own, as a fetch-style host would mount it. */
+  async function fetchSetup(overrides: Partial<CloudApiTransportOptions> = {}) {
+    const graph = await startFakeGraph();
+    const messages: InboundMessage[] = [];
+    const logger = spyLogger();
+    const transport = new CloudApiTransport({
+      accessToken: 'TEST_TOKEN',
+      phoneNumberId: 'PHONE_ID',
+      verifyToken: VERIFY_TOKEN,
+      appSecret: SECRET,
+      baseUrl: graph.origin,
+      logger,
+      ...overrides,
+    });
+    await transport.start({
+      onMessage: (m) => {
+        messages.push(m);
+      },
+    });
+    cleanups.push(() => transport.stop());
+    return { transport, graph, messages, logger };
+  }
+
+  const BASE = 'http://localhost:3000/api/whatsapp/meta';
+
+  /** A WHATWG POST as a fetch host would hand it over, signed with `secret` unless null. */
+  function postRequest(body: string, secret: string | null = SECRET): Request {
+    const headers: Record<string, string> = { 'content-type': 'application/json' };
+    if (secret !== null) headers['x-hub-signature-256'] = computeSignature(secret, Buffer.from(body));
+    return new Request(BASE, { method: 'POST', headers, body });
+  }
+
+  it('answers the GET verification handshake', async () => {
+    const s = await fetchSetup();
+    const ok = await s.transport.handleFetch(
+      new Request(`${BASE}?hub.mode=subscribe&hub.verify_token=${VERIFY_TOKEN}&hub.challenge=12345`),
+    );
+    expect(ok.status).toBe(200);
+    expect(await ok.text()).toBe('12345');
+
+    const wrong = await s.transport.handleFetch(
+      new Request(`${BASE}?hub.mode=subscribe&hub.verify_token=nope&hub.challenge=12345`),
+    );
+    expect(wrong.status).toBe(403);
+  });
+
+  it('accepts a signed POST with 200 and delivers the message', async () => {
+    const s = await fetchSetup();
+    const res = await s.transport.handleFetch(postRequest(textBody('hi from bun')));
+    expect(res.status).toBe(200);
+    await waitFor(() => s.messages.length === 1);
+    expect(s.messages[0]).toMatchObject({ id: WAMID, chatId: '15551234567', text: 'hi from bun' });
+  });
+
+  it('rejects a bad or missing signature with 401 and delivers nothing', async () => {
+    const s = await fetchSetup();
+    expect((await s.transport.handleFetch(postRequest(textBody('x'), 'wrong-secret'))).status).toBe(401);
+    expect((await s.transport.handleFetch(postRequest(textBody('x'), null))).status).toBe(401);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(s.messages).toHaveLength(0);
+  });
+
+  it('processes unsigned events without an appSecret, warning once', async () => {
+    const s = await fetchSetup({ appSecret: undefined });
+    await s.transport.handleFetch(postRequest(textBody('a'), null));
+    await s.transport.handleFetch(postRequest(textBody('b', 'wamid.second'), null));
+    await waitFor(() => s.messages.length === 2);
+    // Once at start, and not again per request.
+    expect(s.logger.warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('answers 405 for other methods and 400 for an oversized body', async () => {
+    const s = await fetchSetup();
+    const put = await s.transport.handleFetch(new Request(BASE, { method: 'PUT' }));
+    expect(put.status).toBe(405);
+    expect(put.headers.get('allow')).toBe('GET, POST');
+    const big = await s.transport.handleFetch(postRequest('a'.repeat(1024 * 1024 + 1)));
+    expect(big.status).toBe(400);
+  });
+});
