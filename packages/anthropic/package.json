@@ -1,6 +1,6 @@
 {
   "name": "@wappajs/anthropic",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Anthropic (Claude) LLM provider for wappa WhatsApp agents.",
   "type": "module",
   "license": "MIT",
@@ -37,7 +37,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.123.0",
-    "@wappajs/core": "^0.1.1"
+    "@wappajs/core": "^0.2.0"
   },
   "keywords": [
     "anthropic",

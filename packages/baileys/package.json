@@ -1,6 +1,6 @@
 {
   "name": "@wappajs/baileys",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Baileys transport adapter for wappa — run a WhatsApp agent on a personal number via QR login.",
   "type": "module",
   "license": "MIT",
@@ -36,7 +36,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@wappajs/core": "^0.1.1",
+    "@wappajs/core": "^0.2.0",
     "baileys": "7.0.0-rc14",
     "pino": "^10.3.1",
     "qrcode-terminal": "^0.12.0"

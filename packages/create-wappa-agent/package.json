@@ -1,6 +1,6 @@
 {
   "name": "create-wappa-agent",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Scaffold a new wappa WhatsApp agent project: npm create wappa-agent my-bot",
   "type": "module",
   "license": "MIT",

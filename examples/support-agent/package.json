@@ -9,9 +9,9 @@
     "dev": "node --watch --env-file=.env dist/index.js"
   },
   "dependencies": {
-    "@wappajs/anthropic": "^0.1.0",
-    "@wappajs/baileys": "^0.1.0",
-    "@wappajs/core": "^0.1.0",
+    "@wappajs/anthropic": "^0.2.0",
+    "@wappajs/baileys": "^0.2.0",
+    "@wappajs/core": "^0.2.0",
     "zod": "^4.5.4"
   }
 }

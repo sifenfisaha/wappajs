@@ -9,7 +9,7 @@
     "dev": "node --watch dist/index.js"
   },
   "dependencies": {
-    "@wappajs/baileys": "^0.1.0",
-    "@wappajs/core": "^0.1.0"
+    "@wappajs/baileys": "^0.2.0",
+    "@wappajs/core": "^0.2.0"
   }
 }

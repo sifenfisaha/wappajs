@@ -1,6 +1,6 @@
 {
   "name": "@wappajs/openai",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "OpenAI (and OpenAI-compatible) LLM provider for wappa WhatsApp agents.",
   "type": "module",
   "license": "MIT",
@@ -36,7 +36,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@wappajs/core": "^0.1.1",
+    "@wappajs/core": "^0.2.0",
     "openai": "^7.9.0"
   },
   "keywords": [

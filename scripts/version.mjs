@@ -35,6 +35,34 @@ for (const d of dirs) {
   console.log(`${pkg.name} -> ${version}`);
 }
 
+// The examples are workspaces too. Their own versions stay put (they are private), but
+// the ranges they put on the packages must follow, or npm installs the previous release
+// from the registry instead of linking the workspace.
+for (const d of readdirSync('examples')) {
+  const path = `examples/${d}/package.json`;
+  let pkg;
+  try {
+    pkg = JSON.parse(readFileSync(path, 'utf8'));
+  } catch {
+    continue;
+  }
+  let touched = false;
+  for (const field of ['dependencies', 'devDependencies']) {
+    const deps = pkg[field];
+    if (!deps) continue;
+    for (const name of Object.keys(deps)) {
+      if (name.startsWith(SCOPE)) {
+        deps[name] = `^${version}`;
+        touched = true;
+      }
+    }
+  }
+  if (touched) {
+    writeFileSync(path, JSON.stringify(pkg, null, 2) + '\n');
+    console.log(`${pkg.name} deps -> ^${version}`);
+  }
+}
+
 const root = JSON.parse(readFileSync('package.json', 'utf8'));
 root.version = version;
 writeFileSync('package.json', JSON.stringify(root, null, 2) + '\n');

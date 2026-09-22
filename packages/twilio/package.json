@@ -1,6 +1,6 @@
 {
   "name": "@wappajs/twilio",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Twilio WhatsApp transport adapter for wappa — run a WhatsApp agent on a Twilio-provisioned number (BSP).",
   "type": "module",
   "license": "MIT",
@@ -36,7 +36,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@wappajs/core": "^0.1.1"
+    "@wappajs/core": "^0.2.0"
   },
   "keywords": [
     "whatsapp",

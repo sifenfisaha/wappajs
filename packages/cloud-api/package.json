@@ -1,6 +1,6 @@
 {
   "name": "@wappajs/cloud-api",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Official WhatsApp Cloud API transport adapter for wappa (Meta Business webhook + Graph API).",
   "type": "module",
   "license": "MIT",
@@ -36,7 +36,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@wappajs/core": "^0.1.1"
+    "@wappajs/core": "^0.2.0"
   },
   "keywords": [
     "whatsapp",

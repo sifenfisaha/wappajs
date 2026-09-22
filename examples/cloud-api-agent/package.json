@@ -9,9 +9,9 @@
     "dev": "node --watch --env-file=.env dist/index.js"
   },
   "dependencies": {
-    "@wappajs/cloud-api": "^0.1.0",
-    "@wappajs/core": "^0.1.0",
-    "@wappajs/openai": "^0.1.0",
+    "@wappajs/cloud-api": "^0.2.0",
+    "@wappajs/core": "^0.2.0",
+    "@wappajs/openai": "^0.2.0",
     "zod": "^4.5.4"
   }
 }

@@ -4,6 +4,39 @@ All notable changes to this project are documented here. The packages are versio
 together: every release publishes all seven at the same version, because
 `create-wappa-agent` pins the dependencies it scaffolds to its own version.
 
+## 0.2.0 (2026-09-22)
+
+### Added
+
+- `@wappajs/core`: `Agent` takes `knowledge`, the half of the system prompt that does
+  not change from one message to the next. It is sent before `instructions`, and the
+  provider receives the split as `GenerateRequest.systemParts` so it can cache the
+  stable part.
+- `@wappajs/core`: `GenerateResult.providerData` and `ChatMessage.providerData`, an
+  opaque field a provider uses to replay an assistant turn exactly as its API produced
+  it. The Agent copies it onto the message it appends and session stores persist it.
+  `ScriptedProvider` passes it through.
+- `@wappajs/anthropic`: prompt caching for `knowledge` (a cache breakpoint after the
+  stable system block), `effort` (`output_config.effort`), `thinking` (passed
+  through), and `extraParams` for Messages API fields the provider does not model.
+- `@wappajs/twilio` and `@wappajs/cloud-api`: `handleFetch(request)`, a WHATWG
+  `Request`/`Response` handler for Bun, Deno, Cloudflare Workers, Hono, Next.js route
+  handlers and any other fetch-style host. Same semantics as `handleRequest`; path
+  routing belongs to the host.
+- `scripts/version.mjs` moves the examples' ranges along with the packages.
+
+### Fixed
+
+- `@wappajs/anthropic`: the thinking blocks of a tool-calling turn are now kept (as
+  `providerData`) and replayed unchanged, as the Messages API requires on the
+  adaptive-thinking models, the default `claude-sonnet-5` among them. Before, the second
+  call of a tool loop could be rejected because the assistant turn came back without its
+  thinking block. Replayed blocks are rebuilt with request fields only, since the API
+  rejects the response-only fields (`citations`, `caller`).
+- `@wappajs/anthropic`: a turn the model refuses is logged at warn level with its
+  `stop_details` instead of passing silently.
+- `@wappajs/twilio` README: the sender option is `whatsappNumber`, not `from`.
+
 ## 0.1.1 (2026-09-16)
 
 First public release. All packages are published under the `@wappajs` scope.

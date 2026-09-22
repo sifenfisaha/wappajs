@@ -1,6 +1,6 @@
 {
   "name": "@wappajs/core",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Transport-agnostic core for building WhatsApp agents: agent loop, tools, middleware, sessions.",
   "type": "module",
   "license": "MIT",
