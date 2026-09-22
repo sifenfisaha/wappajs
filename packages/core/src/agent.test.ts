@@ -378,3 +378,98 @@ describe('Agent.run', () => {
     });
   });
 });
+
+describe('Agent knowledge (the stable half of the prompt)', () => {
+  it('sends knowledge before the instructions, and the two parts separately', async () => {
+    const provider = new ScriptedProvider(['ok']);
+    const agent = new Agent({
+      instructions: (ctx) => `chat ${ctx.message.chatId}`,
+      knowledge: 'The catalogue.',
+      provider,
+    });
+    await agent.run(makeCtx({ chatId: 'alpha' }));
+    expect(provider.calls[0]).toMatchObject({
+      system: 'The catalogue.\n\nchat alpha',
+      systemParts: { stable: 'The catalogue.', dynamic: 'chat alpha' },
+    });
+  });
+
+  it('re-evaluates function knowledge per message, and sends it alone when instructions are empty', async () => {
+    let version = 1;
+    const provider = new ScriptedProvider(['a', 'b']);
+    const agent = new Agent({
+      instructions: '',
+      knowledge: async () => `facts v${version}`,
+      provider,
+    });
+    await agent.run(makeCtx());
+    version = 2;
+    await agent.run(makeCtx());
+    expect(provider.calls[0]!.system).toBe('facts v1');
+    expect(provider.calls[0]!.systemParts).toEqual({ stable: 'facts v1', dynamic: '' });
+    expect(provider.calls[1]!.system).toBe('facts v2');
+  });
+
+  it('sends no systemParts without knowledge', async () => {
+    const provider = new ScriptedProvider(['ok']);
+    const agent = new Agent({ instructions: 'sys', provider });
+    await agent.run(makeCtx());
+    expect(provider.calls[0]!.system).toBe('sys');
+    expect('systemParts' in provider.calls[0]!).toBe(false);
+  });
+});
+
+describe('Agent providerData (what a provider needs to replay its own turns)', () => {
+  it('keeps it on the assistant messages it appends and hands it back on the next call', async () => {
+    const tool = defineTool({ name: 'ping', description: 'pings', execute: () => 'pong' });
+    const provider = new ScriptedProvider([
+      {
+        toolCalls: [{ id: 'c1', name: 'ping', arguments: {} }],
+        providerData: { blocks: ['thinking', 'tool_use'] },
+      },
+      { text: 'Done.', providerData: { blocks: ['thinking', 'text'] } },
+    ]);
+    const agent = new Agent({ instructions: 'sys', provider, tools: [tool] });
+    const ctx = makeCtx({ text: 'go' });
+
+    await expect(agent.run(ctx)).resolves.toBe('Done.');
+    expect(ctx.session.history).toEqual([
+      { role: 'user', content: 'go' },
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'c1', name: 'ping', arguments: {} }],
+        providerData: { blocks: ['thinking', 'tool_use'] },
+      },
+      { role: 'tool', content: 'pong', toolCallId: 'c1', toolName: 'ping' },
+      { role: 'assistant', content: 'Done.', providerData: { blocks: ['thinking', 'text'] } },
+    ]);
+    expect(provider.calls[1]!.messages[1]).toMatchObject({
+      providerData: { blocks: ['thinking', 'tool_use'] },
+    });
+  });
+
+  it('keeps it on the forced no-tools answer after maxTurns', async () => {
+    const tool = defineTool({ name: 'ping', description: 'pings', execute: () => 'pong' });
+    const provider = new ScriptedProvider([
+      { toolCalls: [{ id: 'c1', name: 'ping', arguments: {} }] },
+      { text: 'Forced.', providerData: ['final'] },
+    ]);
+    const agent = new Agent({ instructions: 'sys', provider, tools: [tool], maxTurns: 1 });
+    const ctx = makeCtx();
+    await expect(agent.run(ctx)).resolves.toBe('Forced.');
+    expect(ctx.session.history.at(-1)).toEqual({
+      role: 'assistant',
+      content: 'Forced.',
+      providerData: ['final'],
+    });
+  });
+
+  it('adds no providerData key when the provider returned none', async () => {
+    const provider = new ScriptedProvider(['plain']);
+    const agent = new Agent({ instructions: 'sys', provider });
+    const ctx = makeCtx();
+    await agent.run(ctx);
+    expect('providerData' in ctx.session.history[1]!).toBe(false);
+  });
+});

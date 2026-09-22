@@ -142,3 +142,16 @@ describe('ScriptedProvider', () => {
     );
   });
 });
+
+describe('ScriptedProvider providerData', () => {
+  it('passes a providerData entry through to the result', async () => {
+    const provider = new ScriptedProvider([
+      { text: 'hi', providerData: { kept: true } },
+      'plain',
+    ]);
+    const first = await provider.generate({ messages: [] });
+    const second = await provider.generate({ messages: [] });
+    expect(first.providerData).toEqual({ kept: true });
+    expect('providerData' in second).toBe(false);
+  });
+});

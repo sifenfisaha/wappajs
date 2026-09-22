@@ -75,6 +75,7 @@ export class ScriptedProvider implements Provider {
    * string s === { text: s, toolCalls: [], finishReason: 'stop' }.
    * Partial entries are completed with { text: null, toolCalls: [],
    * finishReason: toolCalls.length ? 'tool_calls' : 'stop' } (explicit fields win).
+   * A `providerData` entry is passed through, so tests can check the Agent keeps it.
    * generate() past the end of the script rejects with
    * Error('ScriptedProvider: script exhausted (call <n> of <len>)') — loops fail loudly.
    */
@@ -90,6 +91,7 @@ export class ScriptedProvider implements Provider {
         finishReason: entry.finishReason ?? (toolCalls.length > 0 ? 'tool_calls' : 'stop'),
       };
       if (entry.usage !== undefined) result.usage = entry.usage;
+      if (entry.providerData !== undefined) result.providerData = entry.providerData;
       return result;
     });
   }

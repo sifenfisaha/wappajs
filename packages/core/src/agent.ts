@@ -3,6 +3,7 @@ import type {
   ChatMessage,
   GenerateRequest,
   Provider,
+  SystemParts,
   ToolCall,
   ToolSpec,
 } from './provider.js';
@@ -11,8 +12,22 @@ import type { Context } from './context.js';
 
 /** Configuration for {@link Agent}. */
 export interface AgentOptions {
-  /** System prompt. Function form is re-evaluated per message. */
+  /**
+   * System prompt. Function form is re-evaluated per message. When `knowledge` is also
+   * set, this is the part that may change from message to message; it is sent after
+   * the knowledge.
+   */
   instructions: string | ((ctx: Context) => string | Promise<string>);
+  /**
+   * The part of the system prompt that does not change from one message to the next:
+   * the policy, a product catalogue, an FAQ, the long material. It is sent before
+   * `instructions`, and providers that support prompt caching cache it, so put every
+   * stable byte here and keep what varies (the time, the customer's name) in
+   * `instructions`. Function form is re-evaluated per message like `instructions`, so
+   * it can be refreshed from a database on your own schedule; the cache holds for as
+   * long as the text comes back identical.
+   */
+  knowledge?: string | ((ctx: Context) => string | Promise<string>);
   provider: Provider;
   tools?: Tool[];
   /** Max provider round-trips per inbound message (tool loop cap). Default 8. */
@@ -34,6 +49,12 @@ export interface AgentOptions {
   temperature?: number;
 }
 
+/** The system prompt as sent: the whole text, plus its two parts when there is knowledge. */
+interface SystemPrompt {
+  system: string;
+  systemParts?: SystemParts;
+}
+
 /**
  * Render the inbound message as user-message text: text if present; media →
  * `[image]`/`[voice note]`/etc placeholder plus caption; location → `[location: lat, lon]`.
@@ -53,6 +74,16 @@ function renderUserMessage(msg: InboundMessage): string {
     body = '';
   }
   return msg.isGroup ? `${msg.senderName || msg.senderId}: ${body}` : body;
+}
+
+/**
+ * Knowledge first, then instructions, separated by a blank line. `systemParts` is set
+ * only when there is knowledge, so a provider can tell a split prompt from a plain one.
+ */
+function composeSystem(knowledge: string | undefined, instructions: string): SystemPrompt {
+  if (knowledge === undefined) return { system: instructions };
+  const system = instructions ? `${knowledge}\n\n${instructions}` : knowledge;
+  return { system, systemParts: { stable: knowledge, dynamic: instructions } };
 }
 
 /**
@@ -107,6 +138,7 @@ function trimHistory(history: ChatMessage[], max: number, maxChars: number): Cha
  */
 export class Agent {
   private readonly instructions: AgentOptions['instructions'];
+  private readonly knowledge: AgentOptions['knowledge'];
   private readonly provider: Provider;
   private readonly tools: Map<string, Tool>;
   private readonly toolSpecs: ToolSpec[];
@@ -118,6 +150,7 @@ export class Agent {
 
   constructor(opts: AgentOptions) {
     this.instructions = opts.instructions;
+    this.knowledge = opts.knowledge;
     this.provider = opts.provider;
     this.tools = new Map((opts.tools ?? []).map((t) => [t.name, t]));
     this.toolSpecs = (opts.tools ?? []).map((t) => ({
@@ -132,15 +165,29 @@ export class Agent {
     this.temperature = opts.temperature;
   }
 
-  private buildRequest(system: string, history: ChatMessage[], withTools: boolean): GenerateRequest {
+  private buildRequest(prompt: SystemPrompt, history: ChatMessage[], withTools: boolean): GenerateRequest {
     const req: GenerateRequest = {
-      system,
+      system: prompt.system,
       messages: [...trimHistory(history, this.maxHistoryMessages, this.maxHistoryChars)],
       maxTokens: this.maxTokens,
     };
+    if (prompt.systemParts) req.systemParts = prompt.systemParts;
     if (withTools && this.toolSpecs.length > 0) req.tools = this.toolSpecs;
     if (this.temperature !== undefined) req.temperature = this.temperature;
     return req;
+  }
+
+  /** Evaluate `knowledge` and `instructions` for this message and compose the prompt. */
+  private async systemFor(ctx: Context): Promise<SystemPrompt> {
+    const instructions =
+      typeof this.instructions === 'function' ? await this.instructions(ctx) : this.instructions;
+    const knowledge =
+      this.knowledge === undefined
+        ? undefined
+        : typeof this.knowledge === 'function'
+          ? await this.knowledge(ctx)
+          : this.knowledge;
+    return composeSystem(knowledge, instructions);
   }
 
   /** Execute one requested tool call; never throws (unknown tools and failures become result strings). */
@@ -160,25 +207,30 @@ export class Agent {
   async run(ctx: Context): Promise<string | null> {
     const snapshot = ctx.session.history.slice();
     try {
-      const system =
-        typeof this.instructions === 'function'
-          ? await this.instructions(ctx)
-          : this.instructions;
+      const prompt = await this.systemFor(ctx);
 
       const history = ctx.session.history;
       history.push({ role: 'user', content: renderUserMessage(ctx.message) });
 
       let finalText: string | null = null;
+      let finalData: unknown;
       let settled = false;
 
       for (let turn = 0; turn < this.maxTurns; turn++) {
-        const result = await this.provider.generate(this.buildRequest(system, history, true));
+        const result = await this.provider.generate(this.buildRequest(prompt, history, true));
         if (result.toolCalls.length === 0) {
           finalText = result.text;
+          finalData = result.providerData;
           settled = true;
           break;
         }
-        history.push({ role: 'assistant', content: result.text ?? '', toolCalls: result.toolCalls });
+        const assistant: ChatMessage = {
+          role: 'assistant',
+          content: result.text ?? '',
+          toolCalls: result.toolCalls,
+        };
+        if (result.providerData !== undefined) assistant.providerData = result.providerData;
+        history.push(assistant);
         for (const call of result.toolCalls) {
           const content = await this.executeToolCall(call, ctx);
           history.push({ role: 'tool', content, toolCallId: call.id, toolName: call.name });
@@ -187,11 +239,16 @@ export class Agent {
 
       if (!settled) {
         // maxTurns hit while the model still wants tools: force a text answer.
-        const result = await this.provider.generate(this.buildRequest(system, history, false));
+        const result = await this.provider.generate(this.buildRequest(prompt, history, false));
         finalText = result.text;
+        finalData = result.providerData;
       }
 
-      if (finalText) history.push({ role: 'assistant', content: finalText });
+      if (finalText) {
+        const assistant: ChatMessage = { role: 'assistant', content: finalText };
+        if (finalData !== undefined) assistant.providerData = finalData;
+        history.push(assistant);
+      }
       ctx.session.history = trimHistory(history, this.maxHistoryMessages, this.maxHistoryChars);
       return finalText || null;
     } catch (err) {
